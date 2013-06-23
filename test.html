@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+</head>
+<body>
+
+    <a href="#/test1">Test 1</a> |
+    <a href="#/middleware">Middleware</a> |
+    <a href="#/param/hello">Param: 'hello'</a> |
+    <a href="#/param/world">Param: 'world'</a> |
+    <a href="#/multipleA">Multiple A</a> |
+    <a href="#/multipleB">Multiple B</a> |
+    <a href="#/asdfasdf/abc">Anything with ABC</a>
+    
+<script src="build/build.js"></script>
+<script>
+
+    var Route66 = require('route66')
+      , router = new Route66()
+    ;
+    
+    router.path('/test1', function () {
+        console.log('test1');
+    });
+    
+    router.path(
+        '/middleware'
+      , function (ctx, next) {
+        ctx.middleware = 'is working';
+        next();
+      }, function (ctx, next) {
+        console.log('middleware', ctx.middleware);
+      }
+    );
+    
+    router.path('/param/:elParameter', function (ctx) {
+        console.log('param:', ctx.params['elParameter']);
+    });
+    
+    router.paths({
+        '/multipleA': [ function (ctx, next) { ctx.middleware = 'has middleware'; next(); }, function (ctx) { console.log('multipleA', ctx.middleware); }]
+      , '/multipleB': function (ctx) { console.log('multipleB'); }
+    });
+    
+    router.path('/*/abc', function () {
+        console.log('Anything with ABC');
+    });
+    
+    router.path('*', function () {
+        console.log('unhandled');
+    });
+
+</script>
+
+</body>
+</html>

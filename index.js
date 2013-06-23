@@ -2,8 +2,50 @@ var location = window.location,
     bind = window.addEventListener ? 'addEventListener' : 'attachEvent',
     load = window.addEventListener ? 'load' : 'onload',
     supported = (window.onpopstate !== undefined),
-    updateurl = supported ? 'popstate' : load;
+    updateurl = supported ? 'popstate' : load
+;
 
+
+/**
+ * Normalize the given path string,
+ * returning a regular expression.
+ *
+ * An empty array should be passed,
+ * which will contain the placeholder
+ * key names. For example "/user/:id" will
+ * then contain ["id"].
+ *
+ * @param  {String|RegExp|Array} path
+ * @param  {Array} keys
+ * @param  {Boolean} sensitive
+ * @param  {Boolean} strict
+ * @return {RegExp}
+ * @api private
+ */
+
+function toRegExp(path, keys, sensitive, strict) {
+    if (path instanceof RegExp) return path;
+    if (path instanceof Array) path = '(' + path.join('|') + ')';
+    
+    path = path
+      .concat(strict ? '' : '/?')
+      .replace(/\/\(/g, '(?:/')
+      .replace(/(\/)?(\.)?:(\w+)(?:(\(.*?\)))?(\?)?/g, function(_, slash, format, key, capture, optional){
+        keys.push({ name: key, optional: !! optional });
+        slash = slash || '';
+        return ''
+          + (optional ? '' : slash)
+          + '(?:'
+          + (optional ? slash : '')
+          + (format || '') + (capture || (format && '([^/.]+?)' || '([^/]+?)')) + ')'
+          + (optional || '');
+      })
+      .replace(/([\/.])/g, '\\$1')
+      .replace(/\*/g, '(.*)');
+    
+    return new RegExp('^' + path + '$', sensitive ? '' : 'i');
+    
+};
 
 /**
  * Create a new Path.
@@ -14,24 +56,57 @@ var location = window.location,
  * @property {string} regexp
  * @returns {Object}
  */
-function Path(path) {
-    this.url = path;
+function Path(url) {
+    this.url = url;
     this.listeners = [];
-    this.toRegExp();
+    this.keys = [];
+    this.regexp = toRegExp(url, this.keys, false, false);
 
     return this;
 }
 
-/**
- * Converts the path string into a regexp.
- * @public
- */
-Path.prototype.toRegExp = function () {
-    this.regexp = new RegExp('^' + this.url.replace(/:\w+/g, '([^\\/]+)').replace(/\//g, '\\/') + '$');
+Path.prototype.test = function (path) {
+    var keys = this.keys
+      , m = this.regexp.exec(path)
+      , params = []
+    ;
 
-    return this;
+    if (!m) return false;
+
+    for (var i = 1, l = m.length; i < l; ++i) {
+        var key = keys[i - 1];
+
+        var val = 'string' === typeof m[i] ? decodeURIComponent(m[i]) : m[i];
+
+        if (key) {
+            params[key.name] = undefined !== params[key.name] ? params[key.name] : val;
+        } else {
+            params.push(val);
+        }
+    }
+    
+    this.run({ path: path, params: params });
+
+    return true;
+
 };
 
+Path.prototype.run = function (ctx) {
+    
+    var self = this
+      , listeners = self.listeners
+      , i = 0
+    ;
+    
+    function next() {
+        var fn = listeners[i++];
+        if (!fn) return; // unhandled
+        fn(ctx, next);
+    }
+    
+    next();
+    
+};
 
 /**
  * Route66 Class
@@ -45,29 +120,21 @@ Path.prototype.toRegExp = function () {
  * @returns {Object}
  */
 function Route66() {
-    this.init();
+    
+    var self = this
+      , hash
+    ;
 
-    return this;
-}
-
-/**
- * Initialize a new router.
- * @constructs
- */
-Route66.prototype.init = function () {
-    var that = this,
-        hash;
-
-    this._collection = {};
+    self._collection = [];
 
     window[bind](updateurl, function () {
         hash = location.hash.split('#!')[1] || location.hash.split('#')[1];
 
         // Home
         if (location.pathname === '/' && hash === undefined) {
-            that._match('/');
+            self._match('/');
         } else {
-            that._match(hash);
+            self._match(hash);
         }
 
     }, false);
@@ -75,49 +142,28 @@ Route66.prototype.init = function () {
     if (!supported) {
         window[bind]('onhashchange', function () {
             hash = location.hash.split('#!')[1] || location.hash.split('#')[1];
-            that._match(hash);
+            self._match(hash);
         });
     }
 
-    return this;
-
-};
+    return self;
+}
 
 /**
  * Checks if the current hash matches with a path.
  * @param {string} hash - The current hash.
  */
 Route66.prototype._match = function (hash) {
-    var listeners,
-        key,
-        i = 0,
-        path,
-        params,
-        len;
-
-    for (key in this._collection) {
-
-        if (this._collection[key] !== undefined) {
-
-            path = this._collection[key];
-
-            params = hash.match(path.regexp);
-
-            if (params) {
-
-                params.splice(0, 1);
-
-                listeners = this._collection[key].listeners;
-
-                len = listeners.length;
-
-                for (i; i < len; i += 1) {
-                    listeners[i].apply(undefined, params);
-                }
-            }
-
+    
+    for (var i = 0, l = this._collection.length; i < l; i += 1) {
+    
+        if (this._collection[i].test(hash)) {
+            return this;
         }
+    
     }
+    
+    // unhandled
 
     return this;
 };
@@ -127,22 +173,28 @@ Route66.prototype._match = function (hash) {
  * @param {string} path -
  * @param {funtion} listener -
  */
-Route66.prototype.path = function (path, listener) {
-    var key;
+Route66.prototype.path = function (path, listeners) {
+    
+    var path = new Path(path);
 
-    if (typeof path === 'object' && listener === undefined) {
-
-        for (key in path) {
-            if (path[key] !== undefined) {
-                this._createPath(key, path[key]);
-            }
-        }
-
-    } else {
-        this._createPath(path, listener);
-    }
-
+    path.listeners = listeners instanceof Array ? listeners : Array.prototype.slice.call(arguments, 1);
+    
+    this._collection.push(path);
+    
     return this;
+    
+};
+
+Route66.prototype.paths = function (paths) {
+    
+    for (var key in paths) {
+        if (paths.hasOwnProperty(key)) {
+            this.path(key, paths[key]);
+        }
+    }
+    
+    return this;
+
 };
 
 /**
@@ -180,15 +232,6 @@ Route66.prototype.remove = function (path, listener) {
     }
 
     return this;
-};
-
-/**
- * Returns a collections of listeners with the given path or an entire collection.
- * @param {string} path
- * @return {array}
- */
-Route66.prototype.paths = function (path) {
-    return (path !== undefined) ? this._collection[path] : this._collection;
 };
 
 
